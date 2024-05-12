@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      - db
+    environment:
+      - DATABASE_URL=postgresql://fastapi:${POSTGRES_PASSWORD}@db/mydatabase
+
+  db:
+    image: postgres
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_USER=fastapi
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=mydatabase
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
