@@ -8,6 +8,7 @@ from io import StringIO
 import datetime
 import os
 from dotenv import load_dotenv
+from sqlalchemy import inspect
 
 # Load environment variables from .env file
 load_dotenv()
@@ -78,10 +79,26 @@ async def startup_event():
 
 @app.post("/upload-csv/{table_name}")
 async def upload_csv(table_name: str, file: UploadFile = File(...)):
-    # Read the CSV file into a DataFrame
-    df = pd.read_csv(StringIO(str(file.file.read(), 'utf-8')))
+    # Define model mapping to their corresponding SQLAlchemy models
+    model_mapping = {
+        'employees': Employee,
+        'departments': Department,
+        'jobs': Job
+    }
+
+    if table_name not in model_mapping:
+        raise HTTPException(status_code=400, detail="Invalid table name provided.")
+
+    # Get the model based on table_name
+    model = model_mapping[table_name]
+
+    # Get column names from the model
+    headers = [column.name for column in inspect(model).columns]
+
+    # Read the CSV file into a DataFrame with the correct headers
+    df = pd.read_csv(StringIO(str(file.file.read(), 'utf-8')), header=None, names=headers)
     
-    # Convert datetime for the 'hired_employees' table
+    # Convert 'datetime' for the 'employees' table
     if table_name == 'employees':
         df['datetime'] = pd.to_datetime(df['datetime'])
 
@@ -90,7 +107,8 @@ async def upload_csv(table_name: str, file: UploadFile = File(...)):
         df.to_sql(table_name, con=engine, if_exists='append', index=False)
         return {"message": f"Data uploaded successfully to {table_name}"}
     except Exception as e:
-        return {"message": str(e)}
+        app.logger.error(f"Error uploading data to {table_name}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
