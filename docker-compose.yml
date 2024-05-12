@@ -11,6 +11,7 @@ services:
       - db
     environment:
       - DATABASE_URL=postgresql://fastapi:${POSTGRES_PASSWORD}@db/mydatabase
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   db:
     image: postgres
