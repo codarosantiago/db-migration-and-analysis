@@ -5,10 +5,16 @@ from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel
 import pandas as pd
 from io import StringIO
-import datetime
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 from sqlalchemy import inspect
+import logging
+from dateutil.parser import parse
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("uvicorn")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,7 +31,7 @@ try:
     engine = create_engine(DATABASE_URL)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 except Exception as e:
-    app.logger.error(f"Failed to create database engine: {e}")
+    logger.error(f"Failed to create database engine: {e}")
     raise HTTPException(status_code=500, detail="Database connection failed")
 
 Base = declarative_base()
@@ -35,7 +41,7 @@ class Employee(Base):
     __tablename__ = 'employees'
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
-    datetime = Column(DateTime)
+    datetime = Column(String)
     department_id = Column(Integer)
     job_id = Column(Integer)
 
@@ -62,7 +68,7 @@ class Job(Base):
 class EmployeeSchema(BaseModel):
     id: int
     name: str
-    datetime: datetime.datetime
+    datetime: datetime
     department_id: int
     job_id: int
 
@@ -76,6 +82,8 @@ def init_db():
 @app.on_event("startup")
 async def startup_event():
     init_db()
+
+
 
 @app.post("/upload-csv/{table_name}")
 async def upload_csv(table_name: str, file: UploadFile = File(...)):
@@ -96,19 +104,42 @@ async def upload_csv(table_name: str, file: UploadFile = File(...)):
     headers = [column.name for column in inspect(model).columns]
 
     # Read the CSV file into a DataFrame with the correct headers
-    df = pd.read_csv(StringIO(str(file.file.read(), 'utf-8')), header=None, names=headers)
-    
-    # Convert 'datetime' for the 'employees' table
-    if table_name == 'employees':
-        df['datetime'] = pd.to_datetime(df['datetime'])
+    csv_file_content = StringIO(str(file.file.read(), 'utf-8'))
+    chunk_size = 1000  # Define the chunk size for batch processing
+
+    # Create a new session for the transaction
+    session = SessionLocal()
 
     try:
-        # Insert data into the database
-        df.to_sql(table_name, con=engine, if_exists='append', index=False)
+        # Process the CSV in chunks
+        for chunk in pd.read_csv(csv_file_content, header=None, names=headers, chunksize=chunk_size):
+
+            # Validate and convert datetime format for employees
+            if table_name == 'employees':
+                chunk['datetime'] = chunk['datetime'].apply(lambda x: parse(x).isoformat() if pd.notnull(x) else None)
+                # Allow 'name' and 'datetime' to be null, remove the dropna
+                chunk['name'] = chunk['name'].where(pd.notnull(chunk['name']), None)
+
+            # Replace NaN with default values
+            if 'job_id' in chunk.columns:
+                chunk['job_id'] = chunk['job_id'].fillna(0).astype(int)
+            if 'department_id' in chunk.columns:
+                chunk['department_id'] = chunk['department_id'].fillna(0).astype(int)
+
+            # Use the session for the transaction
+            session.execute(
+                model.__table__.insert(),
+                chunk.to_dict(orient='records')
+            )
+            session.commit()  # Commit after each chunk
+
         return {"message": f"Data uploaded successfully to {table_name}"}
     except Exception as e:
-        app.logger.error(f"Error uploading data to {table_name}: {e}")
+        session.rollback()  # Rollback in case of error
+        logger.error(f"Error uploading data to {table_name}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        session.close()  # Ensure the session is closed after operation
 
 if __name__ == "__main__":
     import uvicorn
